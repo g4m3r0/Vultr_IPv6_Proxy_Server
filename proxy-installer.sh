@@ -26,9 +26,13 @@ gen64() {
 # Downloads and compiles the latest version of 3proxy.
 install_3proxy() {
     echo "INFO: Fetching the latest 3proxy version..."
-    LATEST_URL=$(curl -s https://api.github.com/repos/z3APA3A/3proxy/releases/latest | grep "browser_download_url.*tar.gz" | sed -E 's/.*"([^"]+)".*/\1/')
+    API_RESPONSE=$(curl -s https://api.github.com/repos/z3APA3A/3proxy/releases/latest)
+    LATEST_URL=$(echo "$API_RESPONSE" | awk -F '"' '/browser_download_url.*tar.gz/ {print $4}')
+
     if [ -z "$LATEST_URL" ]; then
         echo "ERROR: Could not fetch the latest 3proxy version URL. Exiting." >&2
+        echo "INFO: Full API response was:" >&2
+        echo "$API_RESPONSE" >&2
         exit 1
     fi
     echo "INFO: Latest version URL: ${LATEST_URL}"
