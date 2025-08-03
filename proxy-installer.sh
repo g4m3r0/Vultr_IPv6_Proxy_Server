@@ -26,8 +26,8 @@ gen64() {
 # Downloads and compiles the latest version of 3proxy.
 install_3proxy() {
     echo "INFO: Fetching the latest 3proxy version..."
-    API_RESPONSE=$(curl -sL https://api.github.com/repos/z3APA3A/3proxy/releases/latest)
-    LATEST_URL=$(echo "$API_RESPONSE" | awk -F '"' '/browser_download_url.*tar.gz/ {print $4}')
+    API_RESPONSE=$(curl -sL https://api.github.com/repos/3proxy/3proxy/releases/latest)
+    LATEST_URL=$(echo "$API_RESPONSE" | awk -F '"' '/tarball_url/ {print $4}')
 
     if [ -z "$LATEST_URL" ]; then
         echo "ERROR: Could not fetch the latest 3proxy version URL. Exiting." >&2
@@ -38,13 +38,14 @@ install_3proxy() {
     echo "INFO: Latest version URL: ${LATEST_URL}"
 
     echo "INFO: Downloading and compiling 3proxy..."
-    # Get the filename from the URL (e.g., 3proxy-0.9.4.tar.gz)
-    FILENAME=$(basename "$LATEST_URL")
-    # Get the directory name from the filename (e.g., 3proxy-0.9.4)
-    DIR_NAME=$(echo "$FILENAME" | sed 's/\.tar\.gz//')
 
-    curl -sL "$LATEST_URL" | tar -zxf -
-    cd "$DIR_NAME"
+    rm -rf 3proxy-src
+    mkdir -p 3proxy-src
+    cd 3proxy-src
+
+    # Download and extract the source code, stripping the top-level directory
+    curl -sL "$LATEST_URL" | tar -zxf - --strip-components=1
+
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/bin/
     cp src/3proxy /usr/local/etc/3proxy/bin/
