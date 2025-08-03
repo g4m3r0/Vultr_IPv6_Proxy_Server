@@ -27,9 +27,9 @@ gen64() {
 install_3proxy() {
     echo "INFO: Fetching the latest 3proxy version..."
     API_RESPONSE=$(curl -sL https://api.github.com/repos/3proxy/3proxy/releases/latest)
-    LATEST_URL=$(echo "$API_RESPONSE" | awk -F '"' '/tarball_url/ {print $4}')
+    LATEST_URL=$(echo "$API_RESPONSE" | jq -r '.tarball_url')
 
-    if [ -z "$LATEST_URL" ]; then
+    if [ -z "$LATEST_URL" ] || [ "$LATEST_URL" = "null" ]; then
         echo "ERROR: Could not fetch the latest 3proxy version URL. Exiting." >&2
         echo "INFO: Full API response was:" >&2
         echo "$API_RESPONSE" >&2
@@ -266,9 +266,9 @@ main() {
     fi
 
     # --- Dependency Installation ---
-    echo "INFO: Installing required packages (gcc, net-tools, bsdtar, zip, curl)..."
+    echo "INFO: Installing required packages (gcc, net-tools, bsdtar, zip, curl, jq)..."
     # Suppressing output for cleanliness, but errors will still cause exit due to 'set -e'
-    yum -y install gcc net-tools bsdtar zip curl >/dev/null
+    yum -y install gcc net-tools bsdtar zip curl jq >/dev/null
 
     # --- Environment Setup ---
     WORKDIR="/home/proxy-installer"
