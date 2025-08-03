@@ -277,7 +277,11 @@ EOF
     echo "INFO: Applying configurations and starting proxy service..."
     bash "${WORKDIR}/boot_iptables.sh"
     bash "${WORKDIR}/boot_ifconfig.sh"
-    service 3proxy restart
+    if [ -f /usr/local/etc/3proxy/3proxy.pid ]; then
+        service 3proxy restart
+    else
+        service 3proxy start
+    fi
 
     # --- Output ---
     gen_proxy_file_for_user
