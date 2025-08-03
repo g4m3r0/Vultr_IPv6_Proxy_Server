@@ -23,25 +23,32 @@ gen64() {
 
 # --- Core Functions ---
 
-# Downloads and compiles 3proxy.
+# Downloads and compiles the latest version of 3proxy.
 install_3proxy() {
-    echo "INFO: Installing 3proxy..."
-    URL="https://github.com/z3APA3A/3proxy/archive/3proxy-0.8.6.tar.gz"
-    # Use curl instead of wget, as it's already a dependency.
-    # Use tar instead of bsdtar for better compatibility.
-    curl -sL "$URL" | tar -zxf -
-    cd 3proxy-3proxy-0.8.6
+    echo "INFO: Fetching the latest 3proxy version..."
+    LATEST_URL=$(curl -s https://api.github.com/repos/z3APA3A/3proxy/releases/latest | grep "browser_download_url.*tar.gz" | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -z "$LATEST_URL" ]; then
+        echo "ERROR: Could not fetch the latest 3proxy version URL. Exiting." >&2
+        exit 1
+    fi
+    echo "INFO: Latest version URL: ${LATEST_URL}"
+
+    echo "INFO: Downloading and compiling 3proxy..."
+    # Get the filename from the URL (e.g., 3proxy-0.9.4.tar.gz)
+    FILENAME=$(basename "$LATEST_URL")
+    # Get the directory name from the filename (e.g., 3proxy-0.9.4)
+    DIR_NAME=$(echo "$FILENAME" | sed 's/\.tar\.gz//')
+
+    curl -sL "$LATEST_URL" | tar -zxf -
+    cd "$DIR_NAME"
     make -f Makefile.Linux
     mkdir -p /usr/local/etc/3proxy/bin/
     cp src/3proxy /usr/local/etc/3proxy/bin/
-    # The init.d script might not be the best approach for modern systems,
-    # but we will keep it for now to maintain original functionality.
-    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
-    chmod +x /etc/init.d/3proxy
-    # chkconfig is for older RHEL/CentOS systems.
-    chkconfig 3proxy on
+
+    # The rest of the installation (service files) will be handled by another function.
+
     cd "$WORKDIR"
-    echo "INFO: 3proxy installation complete."
+    echo "INFO: 3proxy compilation complete."
 }
 
 # Generates the data file with proxy details.
@@ -63,7 +70,6 @@ gen_data() {
             ;;
         "none")
             seq "$START_PORT" "$LAST_PORT" | while read -r port; do
-                # For 'none' mode, user/pass can be placeholders, as they won't be used for auth.
                 echo "none/none/${IP4}/${port}/$(gen64 "${IP6_PREFIX}")" >> "$WORKDATA"
             done
             ;;
@@ -102,29 +108,18 @@ flush
 EOF
 
     # Add configuration sections based on auth mode
-    case "$AUTH_MODE" in
-        "random")
-            echo "auth strong" >> /usr/local/etc/3proxy/3proxy.cfg
-            echo "users \$(awk -F "/" 'BEGIN{ORS="";} {print \$1 \":CL:\" \$2 \" \"}' "${WORKDATA}")" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" '{print "auth strong\n" \
-                                "allow " $1 "\n" \
-                                "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
-                                "flush\n"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
-            ;;
-        "static")
-            echo "auth strong" >> /usr/local/etc/3proxy/3proxy.cfg
+    if [ "$AUTH_MODE" != "none" ]; then
+        echo "auth strong" >> /usr/local/etc/3proxy/3proxy.cfg
+        if [ "$AUTH_MODE" = "static" ]; then
             echo "users ${STATIC_USER}:CL:${STATIC_PASS}" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" -v user="${STATIC_USER}" '{print "auth strong\n" \
-                                "allow " user "\n" \
-                                "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
-                                "flush\n"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
-            ;;
-        "none")
-            # For 'none' mode, we use a simpler proxy command without authentication (-a)
-            awk -F "/" '{print "proxy -6 -n -p" $4 " -i" $3 " -e"$5"\n" \
-                                "flush\n"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
-            ;;
-    esac
+            awk -F "/" -v user="${STATIC_USER}" '{print "allow " user "\nsocks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+        else # random
+            echo "users \$(awk -F "/" 'BEGIN{ORS="";} {print \$1 \":CL:\" \$2 \" \"}' "${WORKDATA}")" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" '{print "allow " $1 "\nsocks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+        fi
+    else # none
+        awk -F "/" '{print "socks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+    fi
     echo "INFO: 3proxy configuration generated."
 }
 
@@ -145,7 +140,6 @@ gen_ifconfig() {
 # Creates the final proxy list file for the user.
 gen_proxy_file_for_user() {
     echo "INFO: Generating proxy list file..."
-    # The output format depends on whether authentication is used
     if [ "$AUTH_MODE" = "none" ]; then
         # Format: IP:PORT
         awk -F "/" '{print $3 ":" $4}' "${WORKDATA}" > proxy-list.txt
@@ -156,6 +150,34 @@ gen_proxy_file_for_user() {
     echo "INFO: Proxy list saved to $(pwd)/proxy-list.txt"
 }
 
+# Creates the systemd service file for 3proxy.
+create_systemd_service() {
+    echo "INFO: Creating systemd service file..."
+    cat > /etc/systemd/system/3proxy.service <<EOF
+[Unit]
+Description=3proxy Proxy Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+ExecStop=/bin/kill \$(cat /usr/local/etc/3proxy/3proxy.pid)
+RemainAfterExit=yes
+Restart=on-failure
+LimitNOFILE=10048
+User=nobody
+Group=nobody
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    echo "INFO: Reloading systemd daemon..."
+    systemctl daemon-reload
+    echo "INFO: Enabling 3proxy service to start on boot..."
+    systemctl enable 3proxy
+}
+
 # --- Main Execution ---
 
 # Function to display usage information
@@ -163,7 +185,7 @@ usage() {
     echo "Usage: $0 -c <count> -m <mode> [options]"
     echo "  -c, --count       Number of proxies to create (required)."
     echo "  -m, --mode        Authentication mode: 'none', 'random', 'static' (required)."
-    echo "  -p, --port        Starting port number (default: 3128)."
+    echo "  -p, --port        Starting port number (default: 10000)."
     echo "  -u, --user        Username for 'static' auth mode."
     echo "  -P, --password    Password for 'static' auth mode."
     echo "  -l, --log         Enable detailed logging to /usr/local/etc/3proxy/logs/3proxy.log."
@@ -173,7 +195,7 @@ usage() {
 
 main() {
     # --- Default Configuration ---
-    START_PORT=3128
+    START_PORT=10000
     AUTH_MODE=""
     COUNT=0
     STATIC_USER=""
@@ -273,37 +295,14 @@ main() {
     gen_ifconfig
 
     # --- System Configuration ---
-    echo "INFO: Configuring system startup scripts (/etc/rc.local)..."
-    # Use a cleaner way to add to rc.local
-    cat >/etc/rc.local <<EOF
-#!/bin/sh
-#
-# This script will be executed *after* all the other init scripts.
-# You can put your own initialization stuff in here if you don't
-# want to do the full Sys V style init script thing.
-
-touch /var/lock/subsys/local
-bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
-# It's important to set ulimit here for reboots
-ulimit -n 10048
-service 3proxy start
-
-exit 0
-EOF
-    chmod +x /etc/rc.local
+    create_systemd_service
 
     # --- Service Start ---
     echo "INFO: Applying configurations and starting proxy service..."
     bash "${WORKDIR}/boot_iptables.sh"
     bash "${WORKDIR}/boot_ifconfig.sh"
-    # Set ulimit for the current session before starting the service
-    ulimit -n 10048
-    if [ -f /usr/local/etc/3proxy/3proxy.pid ]; then
-        service 3proxy restart
-    else
-        service 3proxy start
-    fi
+    echo "INFO: Restarting 3proxy service..."
+    systemctl restart 3proxy
 
     # --- Output ---
     gen_proxy_file_for_user
