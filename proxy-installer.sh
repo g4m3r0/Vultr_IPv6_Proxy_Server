@@ -75,8 +75,21 @@ gen_data() {
 gen_3proxy_config() {
     echo "INFO: Generating 3proxy configuration for auth mode: ${AUTH_MODE}..."
 
-    # Start with the basic, common configuration
-    cat > /usr/local/etc/3proxy/3proxy.cfg <<EOF
+    # Start with a clean config file
+    > /usr/local/etc/3proxy/3proxy.cfg
+
+    # Add logging directives if logging is enabled
+    if [ "$LOGGING_ENABLED" = true ]; then
+        echo "INFO: Logging enabled."
+        cat >> /usr/local/etc/3proxy/3proxy.cfg <<EOF
+nolog
+log /usr/local/etc/3proxy/logs/3proxy.log D
+logformat "- +_L%t.%.%N %I %O %U %C:%p %T"
+EOF
+    fi
+
+    # Add the basic, common configuration
+    cat >> /usr/local/etc/3proxy/3proxy.cfg <<EOF
 daemon
 maxconn 1000
 nserver 8.8.8.8
@@ -147,12 +160,13 @@ gen_proxy_file_for_user() {
 
 # Function to display usage information
 usage() {
-    echo "Usage: $0 -c <count> -p <start_port> -m <auth_mode> [-u <user> -P <password>]"
+    echo "Usage: $0 -c <count> -m <mode> [options]"
     echo "  -c, --count       Number of proxies to create (required)."
-    echo "  -p, --port        Starting port number (default: 3128)."
     echo "  -m, --mode        Authentication mode: 'none', 'random', 'static' (required)."
+    echo "  -p, --port        Starting port number (default: 3128)."
     echo "  -u, --user        Username for 'static' auth mode."
     echo "  -P, --password    Password for 'static' auth mode."
+    echo "  -l, --log         Enable detailed logging to /usr/local/etc/3proxy/logs/3proxy.log."
     echo "  -h, --help        Display this help message."
     exit 1
 }
@@ -164,6 +178,7 @@ main() {
     COUNT=0
     STATIC_USER=""
     STATIC_PASS=""
+    LOGGING_ENABLED=false
 
     # --- Argument Parsing ---
     while [ "$#" -gt 0 ]; do
@@ -187,6 +202,10 @@ main() {
             -P|--password)
                 STATIC_PASS="$2"
                 shift 2
+                ;;
+            -l|--log)
+                LOGGING_ENABLED=true
+                shift 1
                 ;;
             -h|--help)
                 usage
