@@ -266,6 +266,7 @@ main() {
 touch /var/lock/subsys/local
 bash ${WORKDIR}/boot_iptables.sh
 bash ${WORKDIR}/boot_ifconfig.sh
+# It's important to set ulimit here for reboots
 ulimit -n 10048
 service 3proxy start
 
@@ -277,6 +278,8 @@ EOF
     echo "INFO: Applying configurations and starting proxy service..."
     bash "${WORKDIR}/boot_iptables.sh"
     bash "${WORKDIR}/boot_ifconfig.sh"
+    # Set ulimit for the current session before starting the service
+    ulimit -n 10048
     if [ -f /usr/local/etc/3proxy/3proxy.pid ]; then
         service 3proxy restart
     else
