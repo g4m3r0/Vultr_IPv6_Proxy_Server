@@ -124,7 +124,7 @@ gen_iptables() {
 
 # Generates network interface configuration commands.
 gen_ifconfig() {
-    awk -F "/" '{print "ifconfig eth0 inet6 add " $5 "/64"}' "${WORKDATA}" > "${WORKDIR}/boot_ifconfig.sh"
+    awk -F "/" -v iface="${INTERFACE}" '{print "ifconfig " iface " inet6 add " $5 "/64"}' "${WORKDATA}" > "${WORKDIR}/boot_ifconfig.sh"
     chmod +x "${WORKDIR}/boot_ifconfig.sh"
     echo "INFO: Network interface script generated at ${WORKDIR}/boot_ifconfig.sh"
 }
@@ -240,8 +240,10 @@ main() {
     echo "INFO: Detecting network configuration..."
     IP4=$(curl -4 -s icanhazip.com)
     IP6_PREFIX=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
+    INTERFACE=$(ip -o -4 route show to default | awk '{print $5}')
     echo "INFO: Public IPv4 detected: ${IP4}"
     echo "INFO: Public IPv6 prefix detected: ${IP6_PREFIX}"
+    echo "INFO: Default network interface detected: ${INTERFACE}"
 
     # --- Generation Phase ---
     LAST_PORT=$(($START_PORT + $COUNT - 1))
