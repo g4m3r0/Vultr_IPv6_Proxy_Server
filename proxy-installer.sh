@@ -26,16 +26,20 @@ gen64() {
 # Downloads and compiles the latest version of 3proxy.
 install_3proxy() {
     echo "INFO: Fetching the latest 3proxy version..."
-    API_RESPONSE=$(curl -sL https://api.github.com/repos/3proxy/3proxy/releases/latest)
-    LATEST_URL=$(echo "$API_RESPONSE" | jq -r '.tarball_url')
+    API_RESPONSE=$(curl -sfL https://api.github.com/repos/3proxy/3proxy/releases/latest)
+    if [ $? -ne 0 ] || [ -z "$API_RESPONSE" ]; then
+        echo "ERROR: Failed to fetch 3proxy release info from GitHub API." >&2
+        exit 1
+    fi
 
-    if [ -z "$LATEST_URL" ] || [ "$LATEST_URL" = "null" ]; then
-        echo "ERROR: Could not fetch the latest 3proxy version URL. Exiting." >&2
+    TARBALL_URL=$(echo "$API_RESPONSE" | jq -r '.tarball_url')
+    if [ -z "$TARBALL_URL" ] || [ "$TARBALL_URL" = "null" ]; then
+        echo "ERROR: Could not parse tarball_url from GitHub API response." >&2
         echo "INFO: Full API response was:" >&2
         echo "$API_RESPONSE" >&2
         exit 1
     fi
-    echo "INFO: Latest version URL: ${LATEST_URL}"
+    echo "INFO: Latest 3proxy source tarball URL: $TARBALL_URL"
 
     echo "INFO: Downloading and compiling 3proxy..."
 
@@ -44,11 +48,25 @@ install_3proxy() {
     cd 3proxy-src
 
     # Download and extract the source code, stripping the top-level directory
-    curl -sL "$LATEST_URL" | tar -zxf - --strip-components=1
+    if ! curl -sfL "$TARBALL_URL" | tar -zxf - --strip-components=1; then
+        echo "ERROR: Failed to download or extract 3proxy source tarball." >&2
+        exit 1
+    fi
 
-    make -f Makefile.Linux
+    if ! make -f Makefile.Linux; then
+        echo "ERROR: 3proxy build failed." >&2
+        exit 1
+    fi
+
+    # Stop the service if it's running to allow overwriting the binary
+    echo "INFO: Stopping 3proxy service if running (to allow binary update)..."
+    systemctl stop 3proxy || true  # Ignore if not running or service doesn't exist
+
     mkdir -p /usr/local/etc/3proxy/bin/
-    cp src/3proxy /usr/local/etc/3proxy/bin/
+    # Fixed: Copy from bin/ instead of src/
+    cp bin/3proxy /usr/local/etc/3proxy/bin/
+    # Optionally, copy plugins (ignore if none exist)
+    cp bin/*.ld.so /usr/local/etc/3proxy/bin/ || true
 
     # The rest of the installation (service files) will be handled by another function.
 
@@ -86,30 +104,19 @@ gen_data() {
 gen_3proxy_config() {
     echo "INFO: Generating 3proxy configuration for auth mode: ${AUTH_MODE}..."
 
+    # Ensure config directory exists
+    mkdir -p /usr/local/etc/3proxy
+
     # Start with a clean config file
     > /usr/local/etc/3proxy/3proxy.cfg
 
-    # Add logging directives if logging is enabled
-    if [ "$LOGGING_ENABLED" = true ]; then
-        echo "INFO: Logging enabled."
-        cat >> /usr/local/etc/3proxy/3proxy.cfg <<EOF
-nolog
-log /usr/local/etc/3proxy/logs/3proxy.log D
-logformat "- +_L%t.%.%N %I %O %U %C:%p %T"
-EOF
-    fi
-
     # Add the basic, common configuration
     cat >> /usr/local/etc/3proxy/3proxy.cfg <<EOF
-daemon
 maxconn 1000
 nserver 8.8.8.8
 nserver 8.8.4.4
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
-setgid 65535
-setuid 65535
-flush
 EOF
 
     # Add configuration sections based on auth mode
@@ -117,22 +124,33 @@ EOF
         echo "auth strong" >> /usr/local/etc/3proxy/3proxy.cfg
         if [ "$AUTH_MODE" = "static" ]; then
             echo "users ${STATIC_USER}:CL:${STATIC_PASS}" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" -v user="${STATIC_USER}" '{print "allow " user "\nsocks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" -v user="${STATIC_USER}" '{print "allow " user "\nsocks -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
         else # random
-            echo "users \$(awk -F "/" 'BEGIN{ORS="";} {print \$1 \":CL:\" \$2 \" \"}' "${WORKDATA}")" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" '{print "allow " $1 "\nsocks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" 'BEGIN{ORS=""; print "users "} {print $1 ":CL:" $2 " "} END{print "\n"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" '{print "allow " $1 "\nsocks -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
         fi
     else # none
-        awk -F "/" '{print "socks -6 -p" $4 " -i" $3 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+        echo "auth none" >> /usr/local/etc/3proxy/3proxy.cfg
+        echo "allow *" >> /usr/local/etc/3proxy/3proxy.cfg
+        awk -F "/" '{print "socks -p" $4 " -e" $5}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+        echo "flush" >> /usr/local/etc/3proxy/3proxy.cfg
     fi
     echo "INFO: 3proxy configuration generated."
 }
 
-# Generates firewall rules.
+# Generates firewall rules using firewalld if available, fallback to iptables.
 gen_iptables() {
-    awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' "${WORKDATA}" > "${WORKDIR}/boot_iptables.sh"
-    chmod +x "${WORKDIR}/boot_iptables.sh"
-    echo "INFO: Firewall rules script generated at ${WORKDIR}/boot_iptables.sh"
+    echo "INFO: Generating firewall rules..."
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        echo "INFO: firewalld detected; adding permanent rules..."
+        firewall-cmd --permanent --add-port="$START_PORT-$LAST_PORT"/tcp || true
+        firewall-cmd --reload
+    else
+        echo "INFO: Using iptables for firewall rules..."
+        awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 " -m state --state NEW -j ACCEPT"}' "${WORKDATA}" > "${WORKDIR}/boot_iptables.sh"
+        chmod +x "${WORKDIR}/boot_iptables.sh"
+    fi
+    echo "INFO: Firewall rules applied."
 }
 
 # Generates network interface configuration commands.
@@ -166,8 +184,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-ExecStop=/bin/kill \$(cat /usr/local/etc/3proxy/3proxy.pid)
-RemainAfterExit=yes
 Restart=on-failure
 LimitNOFILE=10048
 User=nobody
@@ -193,7 +209,6 @@ usage() {
     echo "  -p, --port        Starting port number (default: 10000)."
     echo "  -u, --user        Username for 'static' auth mode."
     echo "  -P, --password    Password for 'static' auth mode."
-    echo "  -l, --log         Enable detailed logging to /usr/local/etc/3proxy/logs/3proxy.log."
     echo "  -h, --help        Display this help message."
     exit 1
 }
@@ -205,7 +220,6 @@ main() {
     COUNT=0
     STATIC_USER=""
     STATIC_PASS=""
-    LOGGING_ENABLED=false
 
     # --- Argument Parsing ---
     while [ "$#" -gt 0 ]; do
@@ -229,10 +243,6 @@ main() {
             -P|--password)
                 STATIC_PASS="$2"
                 shift 2
-                ;;
-            -l|--log)
-                LOGGING_ENABLED=true
-                shift 1
                 ;;
             -h|--help)
                 usage
@@ -278,7 +288,7 @@ main() {
     cd "$WORKDIR"
 
     # Clean up previous runs
-    rm -f "$WORKDATA" "boot_*.sh" "proxy-list.txt"
+    rm -f "$WORKDATA" "boot_*.sh" "proxy-list.txt" /usr/local/etc/3proxy/3proxy.pid
 
     install_3proxy
 
@@ -304,10 +314,9 @@ main() {
 
     # --- Service Start ---
     echo "INFO: Applying configurations and starting proxy service..."
-    bash "${WORKDIR}/boot_iptables.sh"
     bash "${WORKDIR}/boot_ifconfig.sh"
-    echo "INFO: Restarting 3proxy service..."
-    systemctl restart 3proxy
+    echo "INFO: Starting 3proxy service..."
+    systemctl start 3proxy
 
     # --- Output ---
     gen_proxy_file_for_user
