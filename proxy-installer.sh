@@ -124,15 +124,15 @@ EOF
         echo "auth strong" >> /usr/local/etc/3proxy/3proxy.cfg
         if [ "$AUTH_MODE" = "static" ]; then
             echo "users ${STATIC_USER}:CL:${STATIC_PASS}" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" -v user="${STATIC_USER}" '{print "allow " user "\nsocks -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" -v user="${STATIC_USER}" '{print "allow " user "\nsocks -6 -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
         else # random
             awk -F "/" 'BEGIN{ORS=""; print "users "} {print $1 ":CL:" $2 " "} END{print "\n"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
-            awk -F "/" '{print "allow " $1 "\nsocks -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+            awk -F "/" '{print "allow " $1 "\nsocks -6 -p" $4 " -e" $5 "\nflush"}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
         fi
     else # none
         echo "auth none" >> /usr/local/etc/3proxy/3proxy.cfg
         echo "allow *" >> /usr/local/etc/3proxy/3proxy.cfg
-        awk -F "/" '{print "socks -p" $4 " -e" $5}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
+        awk -F "/" '{print "socks -6 -p" $4 " -e" $5}' "${WORKDATA}" >> /usr/local/etc/3proxy/3proxy.cfg
         echo "flush" >> /usr/local/etc/3proxy/3proxy.cfg
     fi
     echo "INFO: 3proxy configuration generated."
